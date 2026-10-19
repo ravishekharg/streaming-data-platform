@@ -30,7 +30,23 @@ flowchart LR
 
 ## Results
 
-_Filled from the CI end-to-end run (see the **e2e** job summary on the latest Actions run)._
+Measured on the CI end-to-end run (GitHub-hosted `ubuntu-24.04` runner, single-node stack in Docker Compose).
+Every Actions run reproduces these numbers in its **e2e** job summary.
+
+| | Records |
+|---|---|
+| Sent to Kafka | 20,000 (incl. 388 producer resends, 409 late by up to hours, 597 bad) |
+| bronze (raw, one row per Kafka record) | 20,000 |
+| silver (valid, deduplicated on `event_id`) | 19,015 = 20,000 − 388 duplicates − 597 rejects |
+| quarantine, with reason | 597: unknown_metric 127, missing_device_id 125, event_time_in_future 121, malformed_json 113, value_out_of_range 111 |
+| gold samples (sum of hourly counts) | 19,015, reconciles with silver in every device/metric/hour |
+
+- Assertions are exact, compared through Trino against what the producer recorded. The same 7 assertions pass three
+  times: after the first run, **after deleting the checkpoint and replaying the whole topic** (no row doubled), and
+  after compaction plus snapshot expiry.
+- Ingesting the 20,000-record backlog (`availableNow`, including Spark start-up) takes ~26 s. The whole e2e job,
+  including stack start, the replay and maintenance, takes ~4 minutes.
+- 10 unit tests (Spark local mode) cover parsing, every rejection reason, dedupe, late data, aggregation and the producer.
 
 ## What it demonstrates
 
