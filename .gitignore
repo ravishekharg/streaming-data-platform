@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.checkpoints/
+checkpoints/
+spark-warehouse/
+metastore_db/
+derby.log
+expectations.json
+dq_report.json
+e2e_*.json
+rendered.yaml
+kubeconform
+.terraform/
+.terraform.lock.hcl
+*.tfstate*

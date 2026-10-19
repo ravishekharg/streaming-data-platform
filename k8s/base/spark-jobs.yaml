@@ -1,0 +1,122 @@
+# Spark jobs with the Kubeflow Spark Operator (sparkoperator.k8s.io). Install it first:
+#   helm install spark-operator spark-operator/spark-operator -n spark-operator --create-namespace --set spark.jobNamespaces={sdp}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark
+  namespace: sdp
+  annotations:
+    # On EKS: IAM role (IRSA / Pod Identity) with S3 + Glue access; no keys in the cluster
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/sdp-spark
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sdp-env
+  namespace: sdp
+data:
+  KAFKA_BOOTSTRAP: telemetry-kafka-bootstrap.sdp.svc:9092
+  TELEMETRY_TOPIC: device-telemetry
+  ICEBERG_CATALOG_TYPE: rest
+  ICEBERG_REST_URI: http://iceberg-rest.sdp.svc:8181
+  ICEBERG_WAREHOUSE: s3://sdp-lake/warehouse/
+  S3_ENDPOINT: https://s3.ap-south-1.amazonaws.com
+  CHECKPOINT_DIR: s3a://sdp-lake/checkpoints
+  SHUFFLE_PARTITIONS: "48"
+---
+# Long-running streaming ingest. restartPolicy Always + checkpoint = resumes from the last committed offsets.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: telemetry-ingest
+  namespace: sdp
+spec:
+  type: Python
+  mode: cluster
+  image: ghcr.io/ravishekharg/streaming-data-platform:latest
+  mainApplicationFile: local:///opt/sdp/jobs/stream_ingest.py
+  sparkVersion: "3.5.5"
+  restartPolicy:
+    type: Always
+    onFailureRetryInterval: 30
+    onSubmissionFailureRetryInterval: 60
+  sparkConf:
+    spark.hadoop.fs.s3a.aws.credentials.provider: com.amazonaws.auth.WebIdentityTokenCredentialsProvider
+    spark.sql.streaming.metricsEnabled: "true"
+  driver:
+    serviceAccount: spark
+    cores: 1
+    memory: 2g
+    envFrom: [{configMapRef: {name: sdp-env}}]
+    labels: {app: telemetry-ingest}
+  executor:
+    instances: 3
+    cores: 2
+    memory: 4g
+    envFrom: [{configMapRef: {name: sdp-env}}]
+  dynamicAllocation:
+    enabled: true
+    initialExecutors: 2
+    minExecutors: 2
+    maxExecutors: 8
+---
+# Hourly gold rebuild (last 48 h of event time, idempotent MERGE), followed by the data-quality gate.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: ScheduledSparkApplication
+metadata:
+  name: build-gold
+  namespace: sdp
+spec:
+  schedule: "15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulRunHistoryLimit: 3
+  failedRunHistoryLimit: 5
+  template:
+    type: Python
+    mode: cluster
+    image: ghcr.io/ravishekharg/streaming-data-platform:latest
+    mainApplicationFile: local:///opt/sdp/jobs/build_gold.py
+    arguments: ["--hours", "48"]
+    sparkVersion: "3.5.5"
+    restartPolicy: {type: OnFailure, onFailureRetries: 2, onFailureRetryInterval: 60}
+    driver: {serviceAccount: spark, cores: 1, memory: 2g, envFrom: [{configMapRef: {name: sdp-env}}]}
+    executor: {instances: 2, cores: 2, memory: 4g, envFrom: [{configMapRef: {name: sdp-env}}]}
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: ScheduledSparkApplication
+metadata:
+  name: dq-checks
+  namespace: sdp
+spec:
+  schedule: "40 * * * *"
+  concurrencyPolicy: Forbid
+  template:
+    type: Python
+    mode: cluster
+    image: ghcr.io/ravishekharg/streaming-data-platform:latest
+    mainApplicationFile: local:///opt/sdp/jobs/dq_checks.py
+    arguments: ["--max-reject-rate", "0.05", "--report", "/tmp/dq_report.json"]
+    sparkVersion: "3.5.5"
+    restartPolicy: {type: Never}
+    driver: {serviceAccount: spark, cores: 1, memory: 2g, envFrom: [{configMapRef: {name: sdp-env}}]}
+    executor: {instances: 1, cores: 2, memory: 4g, envFrom: [{configMapRef: {name: sdp-env}}]}
+---
+# Daily Iceberg maintenance: compaction, delete-file rewrite, snapshot expiry, manifest rewrite.
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: ScheduledSparkApplication
+metadata:
+  name: table-maintenance
+  namespace: sdp
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  template:
+    type: Python
+    mode: cluster
+    image: ghcr.io/ravishekharg/streaming-data-platform:latest
+    mainApplicationFile: local:///opt/sdp/jobs/maintenance.py
+    arguments: ["--retain-days", "7"]
+    sparkVersion: "3.5.5"
+    restartPolicy: {type: OnFailure, onFailureRetries: 1}
+    driver: {serviceAccount: spark, cores: 1, memory: 2g, envFrom: [{configMapRef: {name: sdp-env}}]}
+    executor: {instances: 2, cores: 2, memory: 6g, envFrom: [{configMapRef: {name: sdp-env}}]}

@@ -1,0 +1,86 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: lint + Spark unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip, cache-dependency-path: requirements-dev.txt}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check --select E,F,W,I --line-length 120 .
+      - run: pytest -q
+
+  iac:
+    name: terraform + kubernetes manifests + image build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: "1.9.8"}
+      - name: terraform fmt / validate
+        working-directory: terraform/aws
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: kubeconform (incl. Strimzi and Spark Operator CRD schemas)
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          kubectl kustomize k8s/base > rendered.yaml
+          ./kubeconform -summary -output text \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            rendered.yaml
+      - name: build the Spark job image
+        run: docker build -t sdp-spark:ci .
+
+  e2e:
+    name: end-to-end (Kafka -> Spark -> Iceberg -> Trino, with full replay)
+    runs-on: ubuntu-24.04
+    needs: unit
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip, cache-dependency-path: requirements.txt}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/.ivy2
+          key: ivy-${{ hashFiles('sdp/config.py') }}
+      - run: pip install -r requirements.txt
+      - name: run e2e
+        run: EVENTS=20000 bash scripts/e2e.sh
+      - name: summary
+        if: always()
+        run: python scripts/ci_summary.py >> "$GITHUB_STEP_SUMMARY"
+      - name: logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results
+          path: |
+            expectations.json
+            dq_report.json
+            e2e_*.json
