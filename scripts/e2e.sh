@@ -10,7 +10,7 @@ export AWS_ACCESS_KEY_ID=admin AWS_SECRET_ACCESS_KEY=password AWS_REGION=us-east
 step() { echo; echo "=== $* ($(date -u +%H:%M:%S))"; }
 
 step "start stack"
-docker compose up -d --wait kafka minio rest trino
+docker compose up -d --wait kafka s3 rest trino
 docker compose ps
 
 step "create tables"

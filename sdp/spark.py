@@ -1,5 +1,5 @@
 """SparkSession factory. Catalog options:
-  ICEBERG_CATALOG_TYPE=rest  (default) Iceberg REST catalog + S3-compatible storage (MinIO locally)
+  ICEBERG_CATALOG_TYPE=rest  (default) Iceberg REST catalog + S3-compatible storage (SeaweedFS locally)
   ICEBERG_CATALOG_TYPE=glue  AWS Glue Data Catalog + S3 (EMR Serverless / EKS on AWS)
 SDP_JARS_BUNDLED=1 skips the Maven download when the jars are baked into the image (see Dockerfile)."""
 import os

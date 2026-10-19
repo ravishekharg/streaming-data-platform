@@ -20,7 +20,7 @@ flowchart LR
   s & g --> dq["Data-quality gate<br/>(fails the run)"]
   g & s & q --> t["Trino SQL"]
   m["Maintenance: compaction,<br/>snapshot expiry"] -.-> b & s & g
-  subgraph lake["Iceberg tables on S3 (MinIO locally) - REST or Glue catalog"]
+  subgraph lake["Iceberg tables on S3 (SeaweedFS locally) - REST or Glue catalog"]
     b
     q
     s
@@ -58,7 +58,7 @@ docker compose down -v
 Step by step instead of `e2e.sh`:
 
 ```bash
-docker compose up -d --wait kafka minio rest trino
+docker compose up -d --wait kafka s3 rest trino
 export PYTHONPATH=$PWD AWS_ACCESS_KEY_ID=admin AWS_SECRET_ACCESS_KEY=password AWS_REGION=us-east-1
 python -m jobs.init_tables
 python producer/telemetry_producer.py --events 20000 --rate 500      # or no --rate for a burst

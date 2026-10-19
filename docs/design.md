@@ -74,5 +74,5 @@ Kafka keeps 7 days of retention, which is the replay window if the lakehouse eve
 | Kafka | `apache/kafka` KRaft, 1 node | Strimzi, 3 KRaft nodes | MSK Serverless (IAM auth) |
 | Spark | pip `pyspark` on the host | Spark Operator | EMR Serverless |
 | Catalog | Iceberg REST | Iceberg REST (DB-backed) | Glue Data Catalog |
-| Storage | MinIO | S3 | S3 |
+| Storage | SeaweedFS (S3 API) | S3 | S3 |
 | SQL | Trino | Trino (Helm) | Athena / Trino |
