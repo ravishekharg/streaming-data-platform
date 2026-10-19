@@ -6,6 +6,8 @@ from pyspark.sql import Row
 
 from sdp.transforms import bronze_to_silver, hourly_aggregates
 
+BRONZE_SCHEMA = ("kafka_key string, payload string, topic string, kafka_partition int, kafka_offset long, "
+                 "kafka_ts timestamp, ingest_ts timestamp")
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
@@ -20,7 +22,7 @@ def ev(**over):
 def bronze(spark, payloads):
     rows = [Row(kafka_key=None, payload=p, topic="t", kafka_partition=0, kafka_offset=i,
                 kafka_ts=NOW, ingest_ts=NOW) for i, p in enumerate(payloads)]
-    return spark.createDataFrame(rows)
+    return spark.createDataFrame(rows, schema=BRONZE_SCHEMA)
 
 
 def reasons(rejects):
