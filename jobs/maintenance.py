@@ -4,6 +4,7 @@ Run daily (Kubernetes CronJob / ScheduledSparkApplication).
   python -m jobs.maintenance --retain-days 7
 """
 import argparse
+from datetime import datetime, timedelta, timezone
 
 from sdp.config import SETTINGS
 from sdp.spark import build_session
@@ -18,6 +19,8 @@ def main() -> None:
     args = ap.parse_args()
     spark = build_session("table-maintenance")
     cat = SETTINGS.catalog
+    # procedure arguments must be literals, so compute the cutoff here (UTC, explicit offset)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=args.retain_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     for layer, name in TABLES:
         t = f"{layer}.{name}"
         # bin-pack small files into ~128 MB files
@@ -27,7 +30,7 @@ def main() -> None:
         if name == "telemetry":
             spark.sql(f"CALL {cat}.system.rewrite_position_delete_files(table => '{t}')").show(truncate=False)
         spark.sql(f"CALL {cat}.system.expire_snapshots(table => '{t}', "
-                  f"older_than => current_timestamp() - INTERVAL {args.retain_days} DAYS, retain_last => 5)"
+                  f"older_than => TIMESTAMP '{cutoff}', retain_last => 5)"
                   ).show(truncate=False)
         spark.sql(f"CALL {cat}.system.rewrite_manifests(table => '{t}')").show(truncate=False)
     spark.stop()
