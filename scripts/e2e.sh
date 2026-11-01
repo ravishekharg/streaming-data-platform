@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end: stack up -> tables -> produce -> stream -> gold -> DQ gate -> verify in Trino -> replay -> verify again.
+# End-to-end: stack up -> tables -> produce -> stream -> gold -> DQ gate -> verify in Trino -> replay -> verify again
+# -> maintenance -> verify -> erase one device and prove it's gone (also from time travel).
 # Needs Docker, Java 17 and a Python env with requirements.txt installed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -42,5 +43,9 @@ python -m jobs.maintenance --retain-days 0
 
 step "verify again after maintenance"
 python scripts/verify_e2e.py --expect expectations.json --label "after maintenance" --out e2e_maintenance.json
+
+step "erasure: forget one device everywhere, physically (delete, rewrite, expire snapshots, remove orphans)"
+python -m jobs.forget_device --device-id "${FORGET_DEVICE:-dev-0042}" --report forget_report.json
+python scripts/verify_forget.py --report forget_report.json --out e2e_forget.json
 
 echo; echo "E2E PASSED"
