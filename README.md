@@ -48,6 +48,21 @@ Every Actions run reproduces these numbers in its **e2e** job summary.
   including stack start, the replay and maintenance, takes ~4 minutes.
 - 10 unit tests (Spark local mode) cover parsing, every rejection reason, dedupe, late data, aggregation and the producer.
 
+**Erasure ("right to be forgotten") from an immutable lake** (`jobs/forget_device.py`, last e2e step): an Iceberg
+DELETE only writes a new snapshot, and the rows stay readable by time travel. The job deletes, rewrites the files,
+expires every older snapshot and checks every remaining one. Checked from outside through Trino:
+
+| Table | Rows of dev-0042 before | After | Other devices' rows | Time travel to the pre-erasure snapshot |
+|---|---|---|---|---|
+| bronze | 109 | 0 | untouched (20,000 → 19,891) | **refused** |
+| quarantine | 2 | 0 | untouched (597 → 595) | **refused** |
+| silver | 104 | 0 | untouched (19,015 → 18,911) | **refused** |
+| gold | 5 | 0 | untouched (946 → 941) | **refused** |
+
+Snapshot expiry deleted the data files only the old snapshots referenced. Orphan removal (for files of writes that
+never committed) is attempted through Iceberg's Action API and was skipped in this setup; the report says so.
+Kafka keeps the records until its retention runs out (see [`docs/architecture.md`](docs/architecture.md#4-erasure-deleting-data-from-an-immutable-lake)).
+
 ## What it demonstrates
 
 | Problem in real pipelines | How it's handled here |
