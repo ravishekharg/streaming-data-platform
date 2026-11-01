@@ -37,15 +37,24 @@ def predicates(device_id: str) -> dict[str, str]:
     }
 
 
-def remove_orphans(spark, table: str) -> list[str]:
-    """Delete files no snapshot references. The SQL procedure refuses an interval under 24 hours (a concurrent
-    writer's uncommitted files would look like orphans); this job runs with writers stopped, so it uses the Action API,
-    which Iceberg points to for exactly this case."""
+def remove_orphans(spark, table: str) -> tuple[int | None, str]:
+    """Delete files no snapshot references: (count removed, how). The SQL procedure refuses an interval under 24 hours
+    (a concurrent writer's uncommitted files would look like orphans); this job runs with writers stopped, so it uses
+    the Action API, which Iceberg points to for exactly this case. The action lists files through Hadoop by default,
+    which has no "s3" filesystem here (the tables use Iceberg's own S3FileIO), so it lists through the table's FileIO
+    (prefix listing) instead. If this Iceberg version can't, the files are still gone: expire_snapshots already
+    deleted every file only the expired snapshots referenced. Only never-committed files would remain, and they never
+    held committed rows."""
     jvm = spark._jvm
-    t = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table)
-    result = (jvm.org.apache.iceberg.spark.actions.SparkActions.get(spark._jsparkSession)
-              .deleteOrphanFiles(t).olderThan(jvm.java.lang.System.currentTimeMillis()).execute())
-    return list(result.orphanFileLocations())
+    try:
+        t = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table)
+        action = (jvm.org.apache.iceberg.spark.actions.SparkActions.get(spark._jsparkSession)
+                  .deleteOrphanFiles(t).olderThan(jvm.java.lang.System.currentTimeMillis()))
+        if hasattr(action, "usePrefixListing"):
+            action = action.usePrefixListing(True)
+        return len(list(action.execute().orphanFileLocations())), "removed"
+    except Exception as e:  # noqa: BLE001 - reported, not fatal: the committed rows are already gone
+        return None, f"skipped ({type(e).__name__}): relying on expire_snapshots, which deleted the expired files"
 
 
 def main() -> None:
@@ -72,7 +81,7 @@ def main() -> None:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         expired = spark.sql(f"CALL {cat}.system.expire_snapshots(table => '{table}', "
                             f"older_than => TIMESTAMP '{now}', retain_last => 1)").collect()[0]
-        orphans = remove_orphans(spark, t)
+        orphans, orphan_note = remove_orphans(spark, t)
         # every snapshot that still exists (only the current one now) must hold nothing for the device
         snapshots = [r[0] for r in spark.sql(f"SELECT snapshot_id FROM {t}.snapshots").collect()]
         left = sum(scalar(f"SELECT count(*) FROM {t} VERSION AS OF {s} WHERE {where}") for s in snapshots)
@@ -82,7 +91,7 @@ def main() -> None:
             "rows_left_in_any_snapshot": left,
             "data_files_expired": int(expired["deleted_data_files_count"]),
             "delete_files_expired": int(expired["deleted_position_delete_files_count"]),
-            "orphan_files_removed": len(orphans),
+            "orphan_files_removed": orphans, "orphan_removal": orphan_note,
         }
         print(table, report["tables"][table])
     json.dump(report, open(args.report, "w"), indent=2)
