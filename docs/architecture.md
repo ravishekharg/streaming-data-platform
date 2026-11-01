@@ -48,7 +48,7 @@ An Iceberg `DELETE` writes a new snapshot. The deleted rows stay in the old data
 1. `DELETE` the device's rows. Bronze and quarantine are matched on the Kafka key and the raw payload: the parsed `device_id`, or the raw text for malformed JSON. Silver and gold are matched on `device_id`.
 2. `rewrite_data_files` with every file rewritten and delete files folded in, so no live data file still contains the rows.
 3. `expire_snapshots`, keeping only the current snapshot, so nothing references the old files.
-4. `remove_orphan_files`, which deletes the now-unreferenced files from storage.
+4. Orphan removal (the Action API, listing through Iceberg's own S3 client): it deletes files that no snapshot references, such as those left by writes that never committed. The SQL procedure refuses intervals under 24 hours, and the default Hadoop listing has no `s3` filesystem here. If listing isn't available, the step is skipped and the report says so. The erased rows are gone either way, because step 3 already deleted every file that only the expired snapshots used.
 5. A check that no remaining snapshot returns a row for the device.
 
 `scripts/verify_forget.py` then checks from the outside, through Trino:
