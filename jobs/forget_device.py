@@ -7,7 +7,8 @@ travel (`VERSION AS OF`) until three more things happen, so this job does all fo
   2. rewrite data files that still carry delete files (silver is merge-on-read: a DELETE there only adds
      position-delete files, the rows are still physically in the old data files)
   3. expire every snapshot but the current one, so no snapshot references the old files any more
-  4. remove orphan files: delete from storage every file no snapshot references
+  4. remove orphan files: delete from storage every file no snapshot references (expiry already deletes the files
+     only expired snapshots used; this also catches files from writes that never committed)
 
 Then it checks that no remaining snapshot of any table returns a row for the device, and writes a report with the
 pre-erasure snapshot ids (verify_forget.py proves time travel to them is gone).
@@ -36,6 +37,17 @@ def predicates(device_id: str) -> dict[str, str]:
     }
 
 
+def remove_orphans(spark, table: str) -> list[str]:
+    """Delete files no snapshot references. The SQL procedure refuses an interval under 24 hours (a concurrent
+    writer's uncommitted files would look like orphans); this job runs with writers stopped, so it uses the Action API,
+    which Iceberg points to for exactly this case."""
+    jvm = spark._jvm
+    t = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table)
+    result = (jvm.org.apache.iceberg.spark.actions.SparkActions.get(spark._jsparkSession)
+              .deleteOrphanFiles(t).olderThan(jvm.java.lang.System.currentTimeMillis()).execute())
+    return list(result.orphanFileLocations())
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--device-id", required=True)
@@ -60,8 +72,7 @@ def main() -> None:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         expired = spark.sql(f"CALL {cat}.system.expire_snapshots(table => '{table}', "
                             f"older_than => TIMESTAMP '{now}', retain_last => 1)").collect()[0]
-        orphans = spark.sql(f"CALL {cat}.system.remove_orphan_files(table => '{table}', "
-                            f"older_than => TIMESTAMP '{now}')").collect()
+        orphans = remove_orphans(spark, t)
         # every snapshot that still exists (only the current one now) must hold nothing for the device
         snapshots = [r[0] for r in spark.sql(f"SELECT snapshot_id FROM {t}.snapshots").collect()]
         left = sum(scalar(f"SELECT count(*) FROM {t} VERSION AS OF {s} WHERE {where}") for s in snapshots)
